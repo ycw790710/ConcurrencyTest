@@ -1,6 +1,8 @@
 ﻿using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Diagnostics.Metrics;
 using System.Linq;
+using System.Reflection;
 using System.Threading;
 
 namespace ConcurrencyTest;
@@ -68,7 +70,7 @@ internal class Program
                     //                    if (!infoCQueue.TryDequeue(out var tmp))
                     //                        Console.WriteLine("ERROR TryDequeue 1");
                     //                    processing.UnionWith(info.datas);
-                    //                    countCompact++;
+                    //                    Interlocked.Increment(ref countCompact);
                     //                    maxCompact = Math.Max(maxCompact, countCompact);
 
                     //                    info.Call();
@@ -133,6 +135,8 @@ internal class Program
                             }
                         }
                     }
+
+
                 }
                 mainAutoResetEvent.Dispose();
                 Console.WriteLine($"maxCount:{maxCount}");
@@ -238,7 +242,7 @@ internal class Program
                                 if (processing.Overlaps(datas))
                                     Console.WriteLine("ERROR Overlaps 2");
 
-                                countCompact--;
+                                Interlocked.Decrement(ref countCompact);
                                 handling = false;
                             }
                             mainAutoResetEvent.Set();
