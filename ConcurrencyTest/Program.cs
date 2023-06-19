@@ -21,6 +21,8 @@ internal class Program
         //Console.WriteLine((spTime2 - spTime1).Ticks);
         //Console.WriteLine((spTime2 - spTime1).TotalMilliseconds);
 
+        CancellationTokenSource cancellationTokenSource = new();
+        CancellationToken cancellationToken = cancellationTokenSource.Token;
         // 多重Key鎖定 並行處理
         do
         {
@@ -48,9 +50,20 @@ internal class Program
                 sp.Start();
                 while (isProcessing)
                 {
-                    mainAutoResetEvent.WaitOne();
-                    if (!isProcessing)
+                    int waitResult = WaitHandle.WaitAny(new WaitHandle[] { mainAutoResetEvent, cancellationToken.WaitHandle });
+
+                    if (waitResult == WaitHandle.WaitTimeout)
+                    {
                         break;
+                    }
+                    else if (waitResult == 1 || !isProcessing)
+                    {
+                        break;
+                    }
+
+                    //mainAutoResetEvent.WaitOne();
+                    //if (!isProcessing)
+                    //    break;
 
 
                     //if (infoCQueue.Count == 0)
@@ -138,7 +151,7 @@ internal class Program
 
 
                 }
-                mainAutoResetEvent.Dispose();
+                //mainAutoResetEvent.Dispose();
                 Console.WriteLine($"maxCount:{maxCount}");
                 Console.WriteLine($"maxCompact:{maxCompact}");
                 Console.WriteLine($"maxTotalCompact:{maxTotalCompact}");
@@ -152,9 +165,10 @@ internal class Program
             Task[] tasks = new Task[parallelCount];
             for (int processNumber = 0; processNumber < parallelCount; processNumber++)
             {
+                var startId = processNumber;
                 tasks[processNumber] = new Task(() =>
                 {
-                    Console.WriteLine($"Start");
+                    Console.WriteLine($"Start{startId}");
                     SpinWait.SpinUntil(() => false, 1000);
 
                     Random rand = new();
@@ -204,7 +218,19 @@ internal class Program
 
                         mainAutoResetEvent.Set();
 
-                        var got = info.Wait(3000);
+                        var got = false;
+                        try
+                        {
+                            got = info.Wait(3000, cancellationToken);
+                        }
+                        catch
+                        {
+                            //throw;
+                        }
+                        if (cancellationToken.IsCancellationRequested)
+                        {
+                            break;
+                        }
                         if (!got)
                         {
                             lock (info.obj)
@@ -231,7 +257,7 @@ internal class Program
                         if (handling)
                         {
                             //Task.Delay(100).Wait();
-                            SpinWait.SpinUntil(() => false, 100);
+                            SpinWait.SpinUntil(() => false, 0);
 
                             lock (lockProcessing)
                             {
@@ -262,12 +288,21 @@ internal class Program
             {
                 tasks[i].Start();
             }
+            Console.WriteLine("ESC?");
+            if (Console.ReadKey().Key == ConsoleKey.Escape)
+            {
+                cancellationTokenSource.Cancel();
+            }
             Task.WaitAll(tasks);
 
             Console.WriteLine($"successes:{successes.Count},fails:{fails.Count}");
             isProcessing = false;
             mainAutoResetEvent.Set();
+            task.Wait();
+            mainAutoResetEvent.Dispose();
 
+            cancellationTokenSource = new();
+            cancellationToken = cancellationTokenSource.Token;
             Console.WriteLine("Q?");
         }
         while ((Console.ReadKey().Key != ConsoleKey.Q));
@@ -286,7 +321,7 @@ internal class Program
 
         public ManualResetEventSlim manualResetEventSlim = new(false);
         public void Call() => manualResetEventSlim.Set();
-        public bool Wait(int millisecondsTimeout) => manualResetEventSlim.Wait(millisecondsTimeout);
+        public bool Wait(int millisecondsTimeout, CancellationToken cancellationToken = default) => manualResetEventSlim.Wait(millisecondsTimeout, cancellationToken);
         public void DisposeTimer() => manualResetEventSlim.Dispose();
 
 
