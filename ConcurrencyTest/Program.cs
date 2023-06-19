@@ -1,12 +1,24 @@
 ﻿using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Linq;
+using System.Threading;
 
 namespace ConcurrencyTest;
 internal class Program
 {
+    static int countCompact = 0;
     static void Main(string[] args)
     {
+        //Stopwatch stopwatch = new Stopwatch();
+        //SpinWait spinWait = new SpinWait();
+        //stopwatch.Start();
+        //var spTime1 = stopwatch.Elapsed;
+        //spinWait.SpinOnce();
+        //var spTime2 = stopwatch.Elapsed;
+        //stopwatch.Stop();
+        //Console.WriteLine((spTime2 - spTime1).Ticks);
+        //Console.WriteLine((spTime2 - spTime1).TotalMilliseconds);
+
         // 多重Key鎖定 並行處理
         do
         {
@@ -18,11 +30,18 @@ internal class Program
             bool isProcessing = true;
             object lockProcessing = new();
             HashSet<string> processing = new(10000);
-            ConcurrentQueue<Info> waitingInfos = new();
+
+
+            //ConcurrentQueue<Info> infoCQueue = new();
+            LinkedList<MixInfo> mixInfoLinkedList = new();
+
+
             AutoResetEvent mainAutoResetEvent = new(false);
             Task task = new Task(() =>
             {
                 int maxCount = 0;
+                int maxCompact = 1;
+                int maxTotalCompact = 1;
                 Stopwatch sp = new Stopwatch();
                 sp.Start();
                 while (isProcessing)
@@ -30,46 +49,95 @@ internal class Program
                     mainAutoResetEvent.WaitOne();
                     if (!isProcessing)
                         break;
-                    if (waitingInfos.Count == 0)
-                        continue;
-                    maxCount = Math.Max(maxCount, waitingInfos.Count);
-                    if (waitingInfos.TryPeek(out var info))
+
+
+                    //if (infoCQueue.Count == 0)
+                    //    continue;
+
+                    //maxCount = Math.Max(maxCount, infoCQueue.Count);
+                    //if (infoCQueue.TryPeek(out var info))
+                    //{
+                    //    lock (lockProcessing)
+                    //    {
+                    //        lock (info.obj)
+                    //        {
+                    //            if (!info.timeOut)
+                    //            {
+                    //                if (!processing.Overlaps(info.datas))
+                    //                {
+                    //                    if (!infoCQueue.TryDequeue(out var tmp))
+                    //                        Console.WriteLine("ERROR TryDequeue 1");
+                    //                    processing.UnionWith(info.datas);
+                    //                    countCompact++;
+                    //                    maxCompact = Math.Max(maxCompact, countCompact);
+
+                    //                    info.Call();
+
+                    //                    mainAutoResetEvent.Set();
+                    //                    info.isProcessing = true;
+                    //                }
+                    //            }
+                    //            else
+                    //            {
+                    //                if (!infoCQueue.TryDequeue(out var tmp))
+                    //                    Console.WriteLine("ERROR TryDequeue 2");
+                    //                Console.WriteLine("ERROR Timeout");
+                    //                if (infoCQueue.Count > 0)
+                    //                    mainAutoResetEvent.Set();
+                    //            }
+                    //        }
+                    //    }
+                    //}
+                    //else
+                    //    mainAutoResetEvent.Set();
+
+
+                    lock (lockProcessing)
                     {
-                        lock (lockProcessing)
+                        if (mixInfoLinkedList.Count == 0)
+                            continue;
+                    }
+                    maxCount = Math.Max(maxCount, mixInfoLinkedList.Count);
+                    lock (lockProcessing)
+                    {
+                        var mixinfo = mixInfoLinkedList.First;
+                        var keys = mixinfo.Value.keys;
+                        var infos = mixinfo.Value.infos;
+                        if (!processing.Overlaps(keys))
                         {
-                            lock (info.obj)
+                            maxCompact = Math.Max(maxCompact, infos.Count);
+                            maxTotalCompact = Math.Max(maxTotalCompact, mixInfoLinkedList.Sum(n => n.infos.Count - 1));
+
+                            processing.UnionWith(keys);
+                            mixInfoLinkedList.RemoveFirst();
+                            while (infos.Count > 0)
                             {
-                                if (!info.timeOut)
+                                var info = infos.Pop();
+                                lock (info.obj)
                                 {
-                                    if (!processing.Overlaps(info.datas))
+                                    if (!info.timeOut)
                                     {
-                                        if (!waitingInfos.TryDequeue(out var tmp))
-                                            Console.WriteLine("ERROR TryDequeue 1");
+                                        info.Call();
                                         info.isProcessing = true;
-                                        processing.UnionWith(info.datas);
-
-                                        info.manualResetEventSlim.Set();
-                                        //info.semaphoreSlim.Release(1);
-
-                                        mainAutoResetEvent.Set();
                                     }
-                                }
-                                else
-                                {
-                                    if (!waitingInfos.TryDequeue(out var tmp))
-                                        Console.WriteLine("ERROR TryDequeue 2");
-                                    Console.WriteLine("ERROR Timeout");
-                                    if (waitingInfos.Count > 0)
-                                        mainAutoResetEvent.Set();
+                                    else
+                                    {
+                                        if (!processing.IsSupersetOf(info.datas))
+                                            Console.WriteLine("ERROR Not Superset m1");
+                                        processing.ExceptWith(info.datas);
+                                        Console.WriteLine("ERROR Timeout");
+                                        if (mixInfoLinkedList.Count > 0)
+                                            mainAutoResetEvent.Set();
+                                    }
                                 }
                             }
                         }
                     }
-                    else
-                        mainAutoResetEvent.Set();
                 }
                 mainAutoResetEvent.Dispose();
                 Console.WriteLine($"maxCount:{maxCount}");
+                Console.WriteLine($"maxCompact:{maxCompact}");
+                Console.WriteLine($"maxTotalCompact:{maxTotalCompact}");
             });
             task.Start();
 
@@ -83,9 +151,9 @@ internal class Program
                 tasks[processNumber] = new Task(() =>
                 {
                     Console.WriteLine($"Start");
-                    Task.Delay(700).Wait();
-                    Random rand = new();
+                    SpinWait.SpinUntil(() => false, 1000);
 
+                    Random rand = new();
                     Stopwatch sp = new Stopwatch();
                     sp.Start();
                     while (sp.ElapsedMilliseconds <= 3000)
@@ -94,20 +162,45 @@ internal class Program
                         while (datas.Count < 50)
                         {
                             var arrIdx = rand.Next(0, arr.Length);
-                            var id = rand.Next(1_000_000_000, 1_000_000_005);
+                            var id = rand.Next(1_000_000_000, 1_000_001_000);
                             datas.Add($"{arr[arrIdx]}:{id}");
                         }
-
                         Info info = new Info()
                         {
                             datas = datas
                         };
 
-                        waitingInfos.Enqueue(info);
+
+                        //infoCQueue.Enqueue(info);
+
+                        lock (lockProcessing)
+                        {
+                            var cur = mixInfoLinkedList.First;
+                            bool added = false;
+                            while (cur != null)
+                            {
+                                if (!cur.Value.keys.Overlaps(info.datas))
+                                {
+                                    cur.Value.keys.UnionWith(info.datas);
+                                    cur.Value.infos.Push(info);
+                                    added = true;
+                                    break;
+                                }
+                                cur = cur.Next;
+                            }
+                            if (!added)
+                            {
+                                var mixInfo = new MixInfo();
+                                mixInfo.keys.UnionWith(info.datas);
+                                mixInfo.infos.Push(info);
+                                mixInfoLinkedList.AddLast(mixInfo);
+                            }
+                        }
+
+
                         mainAutoResetEvent.Set();
 
-                        var got = info.manualResetEventSlim.Wait(3000);
-                        //var got = info.semaphoreSlim.Wait(3000);
+                        var got = info.Wait(3000);
                         if (!got)
                         {
                             lock (info.obj)
@@ -124,11 +217,7 @@ internal class Program
                         }
                         lock (info.obj)
                         {
-                            info.manualResetEventSlim.Dispose();
-                            info.manualResetEventSlim = null;
-
-                            //info.semaphoreSlim.Dispose();
-                            //info.semaphoreSlim = null;
+                            info.DisposeTimer();
                         }
                         var handling = false;
                         if (got)
@@ -137,7 +226,9 @@ internal class Program
                         }
                         if (handling)
                         {
-                            Task.Delay(10).Wait();
+                            //Task.Delay(100).Wait();
+                            SpinWait.SpinUntil(() => false, 100);
+
                             lock (lockProcessing)
                             {
                                 if (!processing.IsSupersetOf(datas))
@@ -147,6 +238,7 @@ internal class Program
                                 if (processing.Overlaps(datas))
                                     Console.WriteLine("ERROR Overlaps 2");
 
+                                countCompact--;
                                 handling = false;
                             }
                             mainAutoResetEvent.Set();
@@ -176,13 +268,29 @@ internal class Program
         }
         while ((Console.ReadKey().Key != ConsoleKey.Q));
     }
+    class MixInfo
+    {
+        public HashSet<string> keys = new();
+        public Stack<Info> infos = new();
+    }
     class Info
     {
         public object obj = new();
-        public ManualResetEventSlim manualResetEventSlim = new(false);
-        //public SemaphoreSlim semaphoreSlim = new(0, 1);
         public HashSet<string> datas;
         public bool isProcessing = false;
         public bool timeOut = false;
+
+        public ManualResetEventSlim manualResetEventSlim = new(false);
+        public void Call() => manualResetEventSlim.Set();
+        public bool Wait(int millisecondsTimeout) => manualResetEventSlim.Wait(millisecondsTimeout);
+        public void DisposeTimer() => manualResetEventSlim.Dispose();
+
+
+        //public SemaphoreSlim semaphoreSlim = new(0, 1);
+        //public void Call() => semaphoreSlim.Release(1);
+        //public bool Wait(int millisecondsTimeout) => semaphoreSlim.Wait(millisecondsTimeout);
+        //public void DisposeTimer() => semaphoreSlim.Dispose();
+
+
     }
 }
