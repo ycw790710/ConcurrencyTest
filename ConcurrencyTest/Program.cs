@@ -8,216 +8,152 @@ using System.Threading;
 namespace ConcurrencyTest;
 internal class Program
 {
-    static int countCompact = 0;
     static void Main(string[] args)
     {
-        //Stopwatch stopwatch = new Stopwatch();
-        //SpinWait spinWait = new SpinWait();
-        //stopwatch.Start();
-        //var spTime1 = stopwatch.Elapsed;
-        //spinWait.SpinOnce();
-        //var spTime2 = stopwatch.Elapsed;
-        //stopwatch.Stop();
-        //Console.WriteLine((spTime2 - spTime1).Ticks);
-        //Console.WriteLine((spTime2 - spTime1).TotalMilliseconds);
-
         CancellationTokenSource cancellationTokenSource = new();
         CancellationToken cancellationToken = cancellationTokenSource.Token;
+
         // 多重Key鎖定 並行處理
         do
         {
-            List<string> strs = new();
-            for (int i = 0; i < 10; i++)
-                strs.Add(string.Join("", Enumerable.Repeat("a" + i, 40)));
-            var arr = strs.ToArray();
+            int record_maxQueueCount = 0;
+            int record_maxMixCountOfWorks = 1;
+            int record_maxTotalCompactedWorks = 1;
 
-            bool isProcessing = true;
             object lockProcessing = new();
             HashSet<string> processing = new(10000);
 
+            LinkedList<MixWorksInfo> mixWorksInfoLinkedList = new();
 
-            //ConcurrentQueue<Info> infoCQueue = new();
-            LinkedList<MixInfo> mixInfoLinkedList = new();
-
-
-            AutoResetEvent mainAutoResetEvent = new(false);
-            Task task = new Task(() =>
+            AutoResetEventWrapper processResourceHandlerControl = new(false);
+            Task.Run(() =>
             {
-                int maxCount = 0;
-                int maxCompact = 1;
-                int maxTotalCompact = 1;
                 Stopwatch sp = new Stopwatch();
                 sp.Start();
-                while (isProcessing)
+                while (!cancellationToken.IsCancellationRequested)
                 {
-                    int waitResult = WaitHandle.WaitAny(new WaitHandle[] { mainAutoResetEvent, cancellationToken.WaitHandle });
+                    int waitResult = WaitHandle.WaitAny(new WaitHandle[] { processResourceHandlerControl.AutoResetEvent, cancellationToken.WaitHandle });
 
-                    if (waitResult == WaitHandle.WaitTimeout)
-                    {
+                    if (waitResult == WaitHandle.WaitTimeout || waitResult == 1)
                         break;
-                    }
-                    else if (waitResult == 1 || !isProcessing)
-                    {
-                        break;
-                    }
-
-                    //mainAutoResetEvent.WaitOne();
-                    //if (!isProcessing)
-                    //    break;
-
-
-                    //if (infoCQueue.Count == 0)
-                    //    continue;
-
-                    //maxCount = Math.Max(maxCount, infoCQueue.Count);
-                    //if (infoCQueue.TryPeek(out var info))
-                    //{
-                    //    lock (lockProcessing)
-                    //    {
-                    //        lock (info.obj)
-                    //        {
-                    //            if (!info.timeOut)
-                    //            {
-                    //                if (!processing.Overlaps(info.datas))
-                    //                {
-                    //                    if (!infoCQueue.TryDequeue(out var tmp))
-                    //                        Console.WriteLine("ERROR TryDequeue 1");
-                    //                    processing.UnionWith(info.datas);
-                    //                    Interlocked.Increment(ref countCompact);
-                    //                    maxCompact = Math.Max(maxCompact, countCompact);
-
-                    //                    info.Call();
-
-                    //                    mainAutoResetEvent.Set();
-                    //                    info.isProcessing = true;
-                    //                }
-                    //            }
-                    //            else
-                    //            {
-                    //                if (!infoCQueue.TryDequeue(out var tmp))
-                    //                    Console.WriteLine("ERROR TryDequeue 2");
-                    //                Console.WriteLine("ERROR Timeout");
-                    //                if (infoCQueue.Count > 0)
-                    //                    mainAutoResetEvent.Set();
-                    //            }
-                    //        }
-                    //    }
-                    //}
-                    //else
-                    //    mainAutoResetEvent.Set();
-
 
                     lock (lockProcessing)
                     {
-                        if (mixInfoLinkedList.Count == 0)
+                        if (mixWorksInfoLinkedList.Count == 0)
                             continue;
                     }
-                    maxCount = Math.Max(maxCount, mixInfoLinkedList.Count);
+
+                    record_maxQueueCount = Math.Max(record_maxQueueCount, mixWorksInfoLinkedList.Count);
+
                     lock (lockProcessing)
                     {
-                        var mixinfo = mixInfoLinkedList.First;
-                        var keys = mixinfo.Value.keys;
-                        var infos = mixinfo.Value.infos;
-                        if (!processing.Overlaps(keys))
-                        {
-                            maxCompact = Math.Max(maxCompact, infos.Count);
-                            maxTotalCompact = Math.Max(maxTotalCompact, mixInfoLinkedList.Sum(n => n.infos.Count - 1));
+                        var firstMixWorksInfo = mixWorksInfoLinkedList.First;
 
-                            processing.UnionWith(keys);
-                            mixInfoLinkedList.RemoveFirst();
-                            while (infos.Count > 0)
+                        var firstMixKeys = firstMixWorksInfo.Value.mixKeys;
+                        var firstWorkInfos = firstMixWorksInfo.Value.workInfos;
+
+                        var hasProcessingSpaceForKeys = !processing.Overlaps(firstMixKeys);
+                        if (hasProcessingSpaceForKeys)
+                        {
+                            record_maxMixCountOfWorks = Math.Max(record_maxMixCountOfWorks, firstWorkInfos.Count);
+                            record_maxTotalCompactedWorks =
+                                Math.Max(record_maxTotalCompactedWorks,
+                                    mixWorksInfoLinkedList.Sum(n => n.workInfos.Count - 1));
+
+                            // add first to processing
+                            processing.UnionWith(firstMixKeys);
+                            mixWorksInfoLinkedList.RemoveFirst();
+
+                            while (firstWorkInfos.Count > 0)
                             {
-                                var info = infos.Pop();
-                                lock (info.obj)
+                                var workInfo = firstWorkInfos.Dequeue();
+
+                                lock (workInfo.obj)
                                 {
-                                    if (!info.timeOut)
+                                    if (!workInfo.timeOut)
                                     {
-                                        info.Call();
-                                        info.isProcessing = true;
+                                        workInfo.Call();
+                                        workInfo.isProcessing = true;
                                     }
                                     else
                                     {
-                                        if (!processing.IsSupersetOf(info.datas))
-                                            Console.WriteLine("ERROR Not Superset m1");
-                                        processing.ExceptWith(info.datas);
+                                        processing.ExceptWith(workInfo.keys);
                                         Console.WriteLine("ERROR Timeout");
-                                        if (mixInfoLinkedList.Count > 0)
-                                            mainAutoResetEvent.Set();
+
+                                        var hasSpaceForCheckNext = mixWorksInfoLinkedList.Count > 0;
+                                        if (hasSpaceForCheckNext)
+                                            processResourceHandlerControl.Set();
                                     }
                                 }
                             }
                         }
                     }
-
-
                 }
-                //mainAutoResetEvent.Dispose();
-                Console.WriteLine($"maxCount:{maxCount}");
-                Console.WriteLine($"maxCompact:{maxCompact}");
-                Console.WriteLine($"maxTotalCompact:{maxTotalCompact}");
+                processResourceHandlerControl.Dispose();
             });
-            task.Start();
 
-            ConcurrentQueue<string> successes = new();
-            ConcurrentQueue<string> fails = new();
-            ConcurrentQueue<int> ends = new();
-            var parallelCount = 100;
-            Task[] tasks = new Task[parallelCount];
-            for (int processNumber = 0; processNumber < parallelCount; processNumber++)
+
+            var strSources = NewStrSources(10);
+            int successCount = 0;
+            int failCount = 0;
+            ManualResetEventSlim taskBeginProcessControl = new(false);
+            var taskCount = 100;
+            ThreadPool.SetMinThreads(taskCount, taskCount);// here for test
+            int readyCount = 0;
+            int finishedCount = 0;
+            var milliseconds = 3000;
+            for (int processNumber = 0; processNumber < taskCount; processNumber++)
             {
-                var startId = processNumber;
-                tasks[processNumber] = new Task(() =>
+                Task.Run(() =>
                 {
-                    Console.WriteLine($"Start{startId}");
-                    SpinWait.SpinUntil(() => false, 1000);
+                    Interlocked.Increment(ref readyCount);
+                    taskBeginProcessControl.Wait();
 
                     Random rand = new();
-                    Stopwatch sp = new Stopwatch();
-                    sp.Start();
-                    while (sp.ElapsedMilliseconds <= 3000)
+                    Stopwatch sw = new Stopwatch();
+                    sw.Start();
+                    while (sw.ElapsedMilliseconds <= milliseconds)
                     {
-                        HashSet<string> datas = new();
-                        while (datas.Count < 50)
+                        HashSet<string> keys = new();
+                        while (keys.Count < 50)
                         {
-                            var arrIdx = rand.Next(0, arr.Length);
-                            var id = rand.Next(1_000_000_000, 1_000_001_000);
-                            datas.Add($"{arr[arrIdx]}:{id}");
+                            var strIdx = rand.Next(0, strSources.Length);
+                            var id = 1_000_000_000 + rand.Next(0, 500);
+                            keys.Add($"{strSources[strIdx]}:{id}");
                         }
-                        Info info = new Info()
+                        WorkInfo info = new()
                         {
-                            datas = datas
+                            keys = keys
                         };
 
-
-                        //infoCQueue.Enqueue(info);
-
+                        // find space and add
                         lock (lockProcessing)
                         {
-                            var cur = mixInfoLinkedList.First;
+                            var curMix = mixWorksInfoLinkedList.First;
                             bool added = false;
-                            while (cur != null)
+                            while (curMix != null)
                             {
-                                if (!cur.Value.keys.Overlaps(info.datas))
+                                if (!curMix.Value.mixKeys.Overlaps(info.keys))
                                 {
-                                    cur.Value.keys.UnionWith(info.datas);
-                                    cur.Value.infos.Push(info);
+                                    curMix.Value.mixKeys.UnionWith(info.keys);
+                                    curMix.Value.workInfos.Enqueue(info);
                                     added = true;
                                     break;
                                 }
-                                cur = cur.Next;
+                                curMix = curMix.Next;
                             }
                             if (!added)
                             {
-                                var mixInfo = new MixInfo();
-                                mixInfo.keys.UnionWith(info.datas);
-                                mixInfo.infos.Push(info);
-                                mixInfoLinkedList.AddLast(mixInfo);
+                                var mixInfo = new MixWorksInfo();
+                                mixInfo.mixKeys.UnionWith(info.keys);
+                                mixInfo.workInfos.Enqueue(info);
+                                mixWorksInfoLinkedList.AddLast(mixInfo);
                             }
                         }
 
+                        processResourceHandlerControl.Set();
 
-                        mainAutoResetEvent.Set();
-
+                        // wait call
                         var got = false;
                         try
                         {
@@ -247,8 +183,10 @@ internal class Program
                         }
                         lock (info.obj)
                         {
-                            info.DisposeTimer();
+                            info.DisposeControl();
                         }
+
+                        // process work
                         var handling = false;
                         if (got)
                         {
@@ -256,50 +194,61 @@ internal class Program
                         }
                         if (handling)
                         {
-                            //Task.Delay(100).Wait();
+                            // work
                             SpinWait.SpinUntil(() => false, 0);
 
+                            // end work
                             lock (lockProcessing)
                             {
-                                if (!processing.IsSupersetOf(datas))
-                                    Console.WriteLine("ERROR IsSupersetOf");
-                                ;
-                                processing.ExceptWith(datas);
-                                if (processing.Overlaps(datas))
-                                    Console.WriteLine("ERROR Overlaps 2");
-
-                                Interlocked.Decrement(ref countCompact);
-                                handling = false;
+                                processing.ExceptWith(keys);
                             }
-                            mainAutoResetEvent.Set();
-                            successes.Enqueue("success");
+
+                            //has space for check next
+                            processResourceHandlerControl.Set();
+                            Interlocked.Increment(ref successCount);
                         }
                         else
                         {
-                            fails.Enqueue("Fail");
+                            Interlocked.Increment(ref failCount);
                         }
 
                     }
-                    ends.Enqueue(processNumber);
-                    Console.WriteLine($"Not End:{parallelCount - ends.Count}");
+                    Interlocked.Increment(ref finishedCount);
                 });
             }
-            for (int i = 0; i < tasks.Length; i++)
-            {
-                tasks[i].Start();
-            }
-            Console.WriteLine("ESC?");
-            if (Console.ReadKey().Key == ConsoleKey.Escape)
-            {
-                cancellationTokenSource.Cancel();
-            }
-            Task.WaitAll(tasks);
 
-            Console.WriteLine($"successes:{successes.Count},fails:{fails.Count}");
-            isProcessing = false;
-            mainAutoResetEvent.Set();
-            task.Wait();
-            mainAutoResetEvent.Dispose();
+            Console.WriteLine($"tasks count:{taskCount}");
+            while (readyCount <= taskCount)
+            {
+                var pre = readyCount;
+                SpinWait.SpinUntil(() => pre != readyCount || readyCount == taskCount);
+                Console.Write($"\r準備task進度：{readyCount}/{taskCount}");
+                if (readyCount == taskCount)
+                    break;
+            }
+            Console.WriteLine();
+
+            Stopwatch sw = new Stopwatch();
+            sw.Start();
+            taskBeginProcessControl.Set();
+            while (finishedCount <= taskCount)
+            {
+                var pre = finishedCount;
+                SpinWait.SpinUntil(() => pre != finishedCount || finishedCount == taskCount);
+                Console.Write($"\r完成task進度：{finishedCount}/{taskCount}");
+                if (finishedCount == taskCount)
+                    break;
+            }
+            Console.WriteLine();
+            sw.Stop();
+            Console.WriteLine($"ElapsedMilliseconds:{sw.ElapsedMilliseconds}");
+
+            cancellationTokenSource.Cancel();
+
+            Console.WriteLine($"successCount:{successCount}, failCount:{failCount}");
+            Console.WriteLine($"max queue count:{record_maxQueueCount}");
+            Console.WriteLine($"max mix count of works:{record_maxMixCountOfWorks}");
+            Console.WriteLine($"max total compacted works:{record_maxTotalCompactedWorks}");
 
             cancellationTokenSource = new();
             cancellationToken = cancellationTokenSource.Token;
@@ -307,29 +256,108 @@ internal class Program
         }
         while ((Console.ReadKey().Key != ConsoleKey.Q));
     }
-    class MixInfo
+
+    private static string[] NewStrSources(int count)
     {
-        public HashSet<string> keys = new();
-        public Stack<Info> infos = new();
+        List<string> strs = new();
+        for (int i = 0; i < count; i++)
+            strs.Add(string.Join("", Enumerable.Repeat("a" + i, 40)));
+        return strs.ToArray();
     }
-    class Info
+
+    class MixWorksInfo
     {
-        public object obj = new();
-        public HashSet<string> datas;
+        public readonly HashSet<string> mixKeys = new();
+        public readonly Queue<WorkInfo> workInfos = new();
+    }
+    class WorkInfo
+    {
+        public readonly object obj = new();
+        public IReadOnlySet<string> keys { get; init; }
         public bool isProcessing = false;
         public bool timeOut = false;
 
-        public ManualResetEventSlim manualResetEventSlim = new(false);
-        public void Call() => manualResetEventSlim.Set();
-        public bool Wait(int millisecondsTimeout, CancellationToken cancellationToken = default) => manualResetEventSlim.Wait(millisecondsTimeout, cancellationToken);
-        public void DisposeTimer() => manualResetEventSlim.Dispose();
+        public readonly ManualResetEventSlimWrapper _control = new(false);
+        public void Call()
+        {
+            try { _control.Set(); } catch { }
+        }
+        public bool Wait(int millisecondsTimeout, CancellationToken cancellationToken = default) => _control.Wait(millisecondsTimeout, cancellationToken);
 
+        public void DisposeControl()
+        {
+            _control.Dispose();
+        }
 
-        //public SemaphoreSlim semaphoreSlim = new(0, 1);
-        //public void Call() => semaphoreSlim.Release(1);
-        //public bool Wait(int millisecondsTimeout) => semaphoreSlim.Wait(millisecondsTimeout);
-        //public void DisposeTimer() => semaphoreSlim.Dispose();
+    }
 
+    class ManualResetEventSlimWrapper : IDisposable
+    {
+        private readonly ManualResetEventSlim _manualResetEventSlim;
 
+        public ManualResetEventSlimWrapper(bool initialState)
+        {
+            _manualResetEventSlim = new ManualResetEventSlim(initialState);
+        }
+
+        public void Set()
+        {
+            try { _manualResetEventSlim.Set(); } catch { };
+        }
+
+        public bool Wait(int millisecondsTimeout, CancellationToken cancellationToken = default) => _manualResetEventSlim.Wait(millisecondsTimeout, cancellationToken);
+
+        private bool _isDisposed = false;
+        public void Dispose()
+        {
+            if (!_isDisposed)
+            {
+                _isDisposed = true;
+                Dispose(true);
+                GC.SuppressFinalize(this);
+            }
+        }
+
+        protected virtual void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                _manualResetEventSlim.Dispose();
+            }
+        }
+    }
+
+    class AutoResetEventWrapper : IDisposable
+    {
+        public readonly AutoResetEvent AutoResetEvent;
+
+        public AutoResetEventWrapper(bool initialState)
+        {
+            AutoResetEvent = new AutoResetEvent(initialState);
+        }
+
+        public void Set()
+        {
+            try { AutoResetEvent.Set(); } catch { };
+        }
+
+        private bool _isDisposed = false;
+        public void Dispose()
+        {
+            if (!_isDisposed)
+            {
+                _isDisposed = true;
+                Dispose(true);
+                GC.SuppressFinalize(this);
+            }
+        }
+
+        protected virtual void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                AutoResetEvent.Dispose();
+            }
+        }
     }
 }
