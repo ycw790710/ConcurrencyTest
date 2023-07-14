@@ -1,9 +1,4 @@
-﻿using System.Collections.Concurrent;
-using System.Diagnostics;
-using System.Diagnostics.Metrics;
-using System.Linq;
-using System.Reflection;
-using System.Threading;
+﻿using System.Diagnostics;
 
 namespace ConcurrencyTest;
 internal class Program
@@ -13,12 +8,16 @@ internal class Program
         CancellationTokenSource cancellationTokenSource = new();
         CancellationToken cancellationToken = cancellationTokenSource.Token;
 
-        // 多重Key鎖定 並行處理
+        Console.WriteLine("多重Key鎖定 並行處理");
         do
         {
             int record_maxQueueCount = 0;
             int record_maxMixCountOfWorks = 1;
+            int[] record_maxMixCountOfWorkIds = new int[0];
+            int record_maxProcessingKeys = 0;
+            string[] record_maxProcessingKeyStrings = new string[0];
             int record_maxTotalCompactedWorks = 1;
+            int[] record_maxTotalCompactedWorkCounts = new int[0];
 
             object lockProcessing = new();
             HashSet<string> processing = new(10000);
@@ -55,14 +54,22 @@ internal class Program
                         var hasProcessingSpaceForKeys = !processing.Overlaps(firstMixKeys);
                         if (hasProcessingSpaceForKeys)
                         {
+                            if (record_maxMixCountOfWorks < firstWorkInfos.Count)
+                                record_maxMixCountOfWorkIds = firstWorkInfos.Select(n => n.Id).ToArray();
                             record_maxMixCountOfWorks = Math.Max(record_maxMixCountOfWorks, firstWorkInfos.Count);
+                            var new_record_maxTotalCompactedWorks = mixWorksInfoLinkedList.Sum(n => n.workInfos.Count - 1);
+                            if (record_maxTotalCompactedWorks < new_record_maxTotalCompactedWorks)
+                                record_maxTotalCompactedWorkCounts = mixWorksInfoLinkedList.Select(n => n.workInfos.Count).ToArray();
                             record_maxTotalCompactedWorks =
-                                Math.Max(record_maxTotalCompactedWorks,
-                                    mixWorksInfoLinkedList.Sum(n => n.workInfos.Count - 1));
+                                Math.Max(record_maxTotalCompactedWorks, new_record_maxTotalCompactedWorks);
 
                             // add first to processing
                             processing.UnionWith(firstMixKeys);
                             mixWorksInfoLinkedList.RemoveFirst();
+
+                            if (record_maxProcessingKeys < processing.Count)
+                                record_maxProcessingKeyStrings = processing.ToArray();
+                            record_maxProcessingKeys = Math.Max(record_maxProcessingKeys, processing.Count);
 
                             while (firstWorkInfos.Count > 0)
                             {
@@ -104,6 +111,7 @@ internal class Program
             var milliseconds = 3000;
             for (int processNumber = 0; processNumber < taskCount; processNumber++)
             {
+                var processId = processNumber;
                 Task.Run(() =>
                 {
                     Interlocked.Increment(ref readyCount);
@@ -119,11 +127,12 @@ internal class Program
                         {
                             var strIdx = rand.Next(0, strSources.Length);
                             var id = 1_000_000_000 + rand.Next(0, 500);
-                            keys.Add($"{strSources[strIdx]}:{id}");
+                            keys.Add($"{strSources[strIdx]}_{id}");
                         }
                         WorkInfo info = new()
                         {
-                            keys = keys
+                            keys = keys,
+                            Id = processId
                         };
 
                         // find space and add
@@ -241,18 +250,55 @@ internal class Program
             }
             Console.WriteLine();
             sw.Stop();
-            Console.WriteLine($"ElapsedMilliseconds:{sw.ElapsedMilliseconds}");
-
             cancellationTokenSource.Cancel();
 
-            Console.WriteLine($"successCount:{successCount}, failCount:{failCount}");
-            Console.WriteLine($"max queue count:{record_maxQueueCount}");
-            Console.WriteLine($"max mix count of works:{record_maxMixCountOfWorks}");
-            Console.WriteLine($"max total compacted works:{record_maxTotalCompactedWorks}");
 
+            var recordColor = ConsoleColor.Yellow;
+            Random rand = new Random();
+            var caseSpace = "  ";
+
+            Console.ForegroundColor = recordColor;
+            Console.WriteLine($"Elapsed Milliseconds:{sw.ElapsedMilliseconds}");
+            Console.WriteLine($"success: ● ={successCount}");
+            Console.WriteLine($"fail: × ={failCount}");
+            Console.WriteLine($"max queue count:{record_maxQueueCount}");
+            Console.ResetColor();
+            var boxChars = new char[] { '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█' };
+            Console.WriteLine($"  {string.Join("", Enumerable.Repeat(' ', record_maxQueueCount).Select(n => boxChars[rand.Next(0, boxChars.Length)]))}");
+            Console.ForegroundColor = recordColor;
+            Console.WriteLine($"max mix count of works:{record_maxMixCountOfWorks}");
+            Console.ResetColor();
+            Console.WriteLine($"{caseSpace}{string.Join("", record_maxMixCountOfWorkIds.Select(id => $"[{id}]"))}");
+            Console.ForegroundColor = recordColor;
+            Console.WriteLine($"max processing keys:{record_maxProcessingKeys}");
+            Console.ResetColor();
+            Console.WriteLine($"{caseSpace}{string.Join("", record_maxProcessingKeyStrings.Take(3).Select(n => $"[{n}]"))}...");
+            Console.ForegroundColor = recordColor;
+            Console.WriteLine($"max total compacted works:{record_maxTotalCompactedWorks}");
+            Console.ResetColor();
+            var rowCount_record_maxTotalCompactedWorkCounts = record_maxTotalCompactedWorkCounts.Max();
+            for (int i = 0; i < rowCount_record_maxTotalCompactedWorkCounts; i++)
+            {
+                Console.Write(caseSpace);
+                var showHigh = rowCount_record_maxTotalCompactedWorkCounts - i;
+                foreach (var workCount in record_maxTotalCompactedWorkCounts)
+                {
+                    if (workCount >= showHigh)
+                        Console.Write('○');
+                    else
+                        Console.Write(' ');
+                }
+                Console.WriteLine();
+            }
+
+            //record_maxTotalCompactedWorkCounts
+
+            Console.ResetColor();
             cancellationTokenSource = new();
             cancellationToken = cancellationTokenSource.Token;
+            Console.ForegroundColor = ConsoleColor.Yellow;
             Console.WriteLine("Q?");
+            Console.ResetColor();
         }
         while ((Console.ReadKey().Key != ConsoleKey.Q));
     }
@@ -272,6 +318,7 @@ internal class Program
     }
     class WorkInfo
     {
+        public int Id { get; init; }
         public readonly object obj = new();
         public IReadOnlySet<string> keys { get; init; }
         public bool isProcessing = false;
