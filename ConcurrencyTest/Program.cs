@@ -12,11 +12,11 @@ internal class Program
         do
         {
             int record_maxQueueCount = 0;
-            int record_maxMixCountOfWorks = 1;
+            int record_maxCountOfMixedWorks = 1;
             int[] record_maxMixCountOfWorkIds = new int[0];
             int record_maxProcessingKeys = 0;
             string[] record_maxProcessingKeyStrings = new string[0];
-            int record_maxTotalCompactedWorks = 1;
+            int record_maxCountOfCompactedWorks = 1;
             int[] record_maxTotalCompactedWorkCounts = new int[0];
 
             object lockProcessing = new();
@@ -54,14 +54,14 @@ internal class Program
                         var hasProcessingSpaceForKeys = !processing.Overlaps(firstMixKeys);
                         if (hasProcessingSpaceForKeys)
                         {
-                            if (record_maxMixCountOfWorks < firstWorkInfos.Count)
+                            if (record_maxCountOfMixedWorks < firstWorkInfos.Count)
                                 record_maxMixCountOfWorkIds = firstWorkInfos.Select(n => n.Id).ToArray();
-                            record_maxMixCountOfWorks = Math.Max(record_maxMixCountOfWorks, firstWorkInfos.Count);
-                            var new_record_maxTotalCompactedWorks = mixWorksInfoLinkedList.Sum(n => n.workInfos.Count - 1);
-                            if (record_maxTotalCompactedWorks < new_record_maxTotalCompactedWorks)
+                            record_maxCountOfMixedWorks = Math.Max(record_maxCountOfMixedWorks, firstWorkInfos.Count);
+                            var new_record_maxTotalCompactedWorks = mixWorksInfoLinkedList.Sum(n => n.workInfos.Count);
+                            if (record_maxCountOfCompactedWorks < new_record_maxTotalCompactedWorks)
                                 record_maxTotalCompactedWorkCounts = mixWorksInfoLinkedList.Select(n => n.workInfos.Count).ToArray();
-                            record_maxTotalCompactedWorks =
-                                Math.Max(record_maxTotalCompactedWorks, new_record_maxTotalCompactedWorks);
+                            record_maxCountOfCompactedWorks =
+                                Math.Max(record_maxCountOfCompactedWorks, new_record_maxTotalCompactedWorks);
 
                             // add first to processing
                             processing.UnionWith(firstMixKeys);
@@ -266,7 +266,7 @@ internal class Program
             var boxChars = new char[] { '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█' };
             Console.WriteLine($"  {string.Join("", Enumerable.Repeat(' ', record_maxQueueCount).Select(n => boxChars[rand.Next(0, boxChars.Length)]))}");
             Console.ForegroundColor = recordColor;
-            Console.WriteLine($"max mix count of works:{record_maxMixCountOfWorks}");
+            Console.WriteLine($"max count of mixed works:{record_maxCountOfMixedWorks}");
             Console.ResetColor();
             Console.WriteLine($"{caseSpace}{string.Join("", record_maxMixCountOfWorkIds.Select(id => $"[{id}]"))}");
             Console.ForegroundColor = recordColor;
@@ -274,7 +274,7 @@ internal class Program
             Console.ResetColor();
             Console.WriteLine($"{caseSpace}{string.Join("", record_maxProcessingKeyStrings.Take(3).Select(n => $"[{n}]"))}...");
             Console.ForegroundColor = recordColor;
-            Console.WriteLine($"max total compacted works:{record_maxTotalCompactedWorks}");
+            Console.WriteLine($"max count of compacted works:{record_maxCountOfCompactedWorks}");
             Console.ResetColor();
             var rowCount_record_maxTotalCompactedWorkCounts = record_maxTotalCompactedWorkCounts.Max();
             for (int i = 0; i < rowCount_record_maxTotalCompactedWorkCounts; i++)
