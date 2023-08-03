@@ -227,27 +227,25 @@ internal class Program
             }
 
             Console.WriteLine($"tasks count:{taskCount}");
-            while (readyCount <= taskCount)
+            while (readyCount < taskCount)
             {
                 var pre = readyCount;
                 SpinWait.SpinUntil(() => pre != readyCount || readyCount == taskCount);
                 Console.Write($"\r準備task進度：{readyCount}/{taskCount}");
-                if (readyCount == taskCount)
-                    break;
             }
+            Console.Write($"\r準備task進度：{readyCount}/{taskCount}");
             Console.WriteLine();
 
             Stopwatch sw = new Stopwatch();
             sw.Start();
             taskBeginProcessControl.Set();
-            while (finishedCount <= taskCount)
+            while (finishedCount < taskCount)
             {
                 var pre = finishedCount;
                 SpinWait.SpinUntil(() => pre != finishedCount || finishedCount == taskCount);
                 Console.Write($"\r完成task進度：{finishedCount}/{taskCount}");
-                if (finishedCount == taskCount)
-                    break;
             }
+            Console.Write($"\r完成task進度：{finishedCount}/{taskCount}");
             Console.WriteLine();
             sw.Stop();
             cancellationTokenSource.Cancel();
